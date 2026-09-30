@@ -21,6 +21,21 @@
   .stats div{text-align:center}
   .stats b{display:block;font-family:'Nanum Myeongjo',serif;font-size:20px;font-variant-numeric:tabular-nums}
   .stats span{font-size:12px;color:var(--soft)}
+  #clockbar{display:flex;align-items:center;justify-content:center;gap:18px;margin:14px auto 0;padding:10px 22px 10px 12px;background:rgba(255,250,241,.85);border:1px solid var(--line);border-radius:999px;box-shadow:0 6px 20px rgba(120,80,40,.12);width:max-content;max-width:calc(100% - 32px);position:relative;z-index:2}
+  #clock{width:128px;height:128px;flex:none}
+  #clock svg{width:100%;height:100%;display:block;overflow:visible}
+  #clock .pct{font-family:'Nanum Myeongjo',serif;font-weight:800;font-size:18px;fill:var(--ink)}
+  .cinfo{text-align:left;min-width:0}
+  #phase{display:inline-block;font-size:14px;font-weight:700;color:#fff;border-radius:999px;padding:3px 12px;background:#c9b48f;transition:background .4s}
+  #countdown{font-family:'Nanum Myeongjo',serif;font-weight:800;font-size:30px;font-variant-numeric:tabular-nums;margin:6px 0 2px;line-height:1.1}
+  #cdlabel{font-size:13px;color:var(--soft)}
+  #tiphint{font-size:12px;color:#b8662e;margin-top:6px}
+  .boost{position:fixed;pointer-events:none;font-family:'Nanum Myeongjo',serif;font-weight:800;font-size:18px;color:#b8662e;text-shadow:0 1px 0 #fff;transform:translate(-50%,-50%);animation:rise 1s ease-out forwards;z-index:5;white-space:nowrap}
+  .ring{position:fixed;pointer-events:none;width:14px;height:14px;border-radius:50%;border:2px solid rgba(232,140,60,.7);transform:translate(-50%,-50%);animation:ring .6s ease-out forwards;z-index:4}
+  @keyframes rise{from{opacity:1;margin-top:0}to{opacity:0;margin-top:-50px}}
+  @keyframes ring{to{width:90px;height:90px;opacity:0}}
+  body{cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+  @media (max-width:480px){#clock{width:100px;height:100px}#countdown{font-size:24px}#clockbar{gap:12px;padding:8px 16px 8px 8px}header{padding-top:16px}}
   .actions{text-align:center;margin:10px 0 6px;min-height:46px}
   #act{font:inherit;font-size:16px;color:#fff;background:#b8662e;border:0;border-radius:999px;padding:11px 24px;cursor:pointer;box-shadow:0 4px 14px rgba(160,80,20,.3)}
   #act:disabled{background:#c9a07a;cursor:default;box-shadow:none}
@@ -32,20 +47,34 @@
   li:last-child{border:0}
   time{color:var(--soft);font-size:12px;white-space:nowrap;padding-top:2px;font-variant-numeric:tabular-nums}
   .reset{display:block;margin:10px auto 0;background:none;border:0;color:var(--soft);font:inherit;font-size:12px;text-decoration:underline;cursor:pointer}
-  #toast{position:fixed;left:50%;top:96px;transform:translate(-50%,-10px);background:rgba(74,51,32,.92);color:#fff7ea;padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;transition:all .35s;pointer-events:none;max-width:90vw;text-align:center}
+  #toast{position:fixed;left:50%;top:14px;transform:translate(-50%,-10px);background:rgba(74,51,32,.92);color:#fff7ea;padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;transition:all .35s;pointer-events:none;max-width:90vw;text-align:center}
   #toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
 </head>
 <body>
 <header>
   <h1>시간 발효실</h1>
-  <div class="sub">이 창을 열어둔 만큼 반죽이 자라요 · 화면이 보일 때만 발효돼요</div>
+  <div class="sub">이 창을 열어둔 만큼 반죽이 자라요</div>
 </header>
+<div id="clockbar">
+  <div id="clock" aria-label="발효 시계"><svg viewBox="0 0 100 100">
+    <circle class="face" cx="50" cy="50" r="47" fill="#fffaf1" stroke="rgba(120,80,40,.3)" stroke-width="1.5"/>
+    <g id="zones"></g><g id="ticks"></g>
+    <line id="hand" x1="50" y1="50" x2="50" y2="14" stroke="#4a3320" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="50" cy="50" r="4.5" fill="#4a3320"/>
+    <text class="pct" id="tProof" x="50" y="89" text-anchor="middle">0%</text>
+  </svg></div>
+  <div class="cinfo">
+    <span id="phase">잠자는 중</span>
+    <div id="countdown">--:--</div>
+    <div id="cdlabel">굽기 딱 좋을 때까지</div>
+    <div id="tiphint">👆 빈 곳을 톡톡 누르면 발효가 빨라져요</div>
+  </div>
+</div>
 <div id="stage"><canvas id="c"></canvas></div>
 <div id="status"></div>
 <div class="stats">
   <div><b id="tActive">00:00:00</b><span>함께한 시간</span></div>
-  <div><b id="tProof">0%</b><span>발효</span></div>
   <div><b id="tBreads">0</b><span>구운 빵</span></div>
 </div>
 <div class="actions"><button id="act" style="visibility:hidden"></button></div>
@@ -58,7 +87,7 @@
 <script>
 (() => {
   const qs = new URLSearchParams(location.search);
-  const SPEED = Math.max(1, Number(qs.get('speed')) || 1);   // ?speed=60 으로 빨리감기 테스트
+  let speed = Math.max(1, Number(qs.get('speed')) || 1);
   const KEY = 'time-ferment-v1';
   const PROOF = 1800, OVER_START = 2700, OVER_END = 5400, BAKE = 180;
   const $ = id => document.getElementById(id);
@@ -153,9 +182,12 @@
   function ui() {
     const d = derived();
     $('tActive').textContent = fmt(S.active);
-    $('tProof').textContent = Math.round(d.proof * 100) + '%';
+    $('tProof').textContent = S.bakeStart !== null ? (S.baked ? '완성' : '굽는 중') : Math.round(d.proof * 100) + '%';
+    const frac = S.bakeStart !== null ? clamp(S.bakeStart / OVER_END) : clamp(S.active / OVER_END);
+    $('hand').setAttribute('transform', `rotate(${-135 + 270 * frac} 50 50)`);
     $('tBreads').textContent = S.breads;
     $('status').textContent = statusText(d);
+    clockInfo();
     const b = $('act');
     let label = null, dis = false; act = null;
     if (S.mold >= 0.8) { label = '버리고 새로 시작 🗑'; act = 'toss'; }
@@ -187,12 +219,72 @@
     bubbles.length = 0; dents.length = 0; moldCache = null; ui();
   });
 
+  // ---------- clock ----------
+  (function buildClock() {
+    const NS = 'http://www.w3.org/2000/svg', R0 = 40;
+    const pt = f => { const a = (-135 + 270 * f - 90) * Math.PI / 180; return [50 + R0 * Math.cos(a), 50 + R0 * Math.sin(a)]; };
+    const arc = (f0, f1, col) => {
+      const [x0, y0] = pt(f0), [x1, y1] = pt(f1), big = (f1 - f0) * 270 > 180 ? 1 : 0;
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', `M${x0} ${y0} A${R0} ${R0} 0 ${big} 1 ${x1} ${y1}`);
+      p.setAttribute('fill', 'none'); p.setAttribute('stroke', col); p.setAttribute('stroke-width', '8');
+      $('zones').append(p);
+    };
+    const f = v => v / OVER_END;
+    arc(0, f(PROOF * 0.5), '#e8dcc8');                 // 아직 이름
+    arc(f(PROOF * 0.5), f(PROOF), '#f2c96b');          // 부푸는 중
+    arc(f(PROOF), f(OVER_START + 0.15 * (OVER_END - OVER_START)), '#7cb86a'); // 딱 좋음
+    arc(f(OVER_START + 0.15 * (OVER_END - OVER_START)), 1, '#d9745a');       // 과발효
+    for (let i = 0; i <= 12; i++) {
+      const a = (-135 + 270 * i / 12 - 90) * Math.PI / 180, r1 = i % 3 ? 31 : 29;
+      const l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', 50 + r1 * Math.cos(a)); l.setAttribute('y1', 50 + r1 * Math.sin(a));
+      l.setAttribute('x2', 50 + 34 * Math.cos(a)); l.setAttribute('y2', 50 + 34 * Math.sin(a));
+      l.setAttribute('stroke', 'rgba(74,51,32,.35)'); l.setAttribute('stroke-width', i % 3 ? 1 : 1.8);
+      $('ticks').append(l);
+    }
+  })();
+  const PERFECT_END = OVER_START + 0.15 * (OVER_END - OVER_START);
+  const mmss = sec => { sec = Math.max(0, Math.ceil(sec)); const m = Math.floor(sec / 60), x = sec % 60; return (m >= 60 ? Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+  function clockInfo() {
+    let label, color, time, sub;
+    if (S.mold >= 0.8) { label = '곰팡이'; color = '#7e9868'; time = '—'; sub = '새 반죽이 필요해요'; }
+    else if (S.baked) { label = '완성'; color = '#b8662e'; time = '🍞'; sub = S.quality; }
+    else if (S.bakeStart !== null) { label = '굽는 중'; color = '#d9745a'; time = mmss(BAKE - (S.active - S.bakeStart)); sub = '다 구워질 때까지'; }
+    else if (S.active < PROOF * 0.5) { label = S.active < 45 ? '잠자는 중' : '부풀기 시작'; color = '#c9b48f'; time = mmss(PROOF - S.active); sub = '굽기 딱 좋을 때까지'; }
+    else if (S.active < PROOF) { label = '부푸는 중'; color = '#e0a83a'; time = mmss(PROOF - S.active); sub = '굽기 딱 좋을 때까지'; }
+    else if (S.active < PERFECT_END) { label = '딱 좋음!'; color = '#5fa152'; time = mmss(PERFECT_END - S.active); sub = '지금 구우세요 · 남은 시간'; }
+    else { label = '과발효'; color = '#d9745a'; time = '+' + mmss(S.active - PERFECT_END); sub = '딱 좋은 때를 지났어요'; }
+    const ph = $('phase');
+    ph.textContent = label; ph.style.background = color; $('countdown').textContent = time; $('cdlabel').textContent = sub;
+    $('tiphint').style.visibility = (S.mold >= 0.8 || S.baked) ? 'hidden' : 'visible';
+  }
+
+  // ---------- tap anywhere to speed up ----------
+  const BOOST = 120, BAKE_BOOST = 20;
+  function boost(x, y) {
+    if (S.mold >= 0.8 || S.baked) return;
+    const add = S.bakeStart !== null ? BAKE_BOOST : BOOST;
+    S.active += add;
+    const r = document.createElement('div'); r.className = 'ring'; r.style.left = x + 'px'; r.style.top = y + 'px';
+    const t = document.createElement('div'); t.className = 'boost'; t.style.left = x + 'px'; t.style.top = y + 'px';
+    t.textContent = S.bakeStart !== null ? '🔥 +' + add + '초' : '⏩ +' + add / 60 + '분';
+    document.body.append(r, t);
+    setTimeout(() => { r.remove(); t.remove(); }, 1000);
+    jig = Math.max(jig, 0.15);
+    milestones(); ui();
+  }
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest('button, details, a, #c')) return;
+    boost(e.clientX, e.clientY);
+  });
+
   // ---------- tick ----------
   let lastTick = performance.now();
   setInterval(() => {
     const now = performance.now();
     const dt = Math.min(5, (now - lastTick) / 1000); lastTick = now;
-    if (!document.hidden) S.active += dt * SPEED;
+    if (!document.hidden) S.active += dt * speed;
     S.lastSeen = Date.now();
     milestones(); ui();
   }, 250);
@@ -395,17 +487,17 @@
     const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
     const d = derived(), g = geom(d);
     const u = (x - g.cx) / g.drx;
-    if (Math.abs(u) >= 0.97) return;
-    const hMax = g.dry * Math.sqrt(1 - u * u);
-    const v = (g.baseY - y) / hMax;
-    if (v < 0.05 || v > 1.05) return;
+    const hMax = Math.abs(u) < 0.97 ? g.dry * Math.sqrt(1 - u * u) : 0;
+    const v = hMax ? (g.baseY - y) / hMax : -1;
+    if (v < 0.05 || v > 1.05) { boost(e.clientX, e.clientY); return; }
     if (S.baked) { toast('🤛 똑똑, 단단하게 잘 구워졌어요'); jig = 0.25; return; }
     if (S.bakeStart !== null) { toast('🔥 앗 뜨거! 굽는 중이에요'); return; }
     let rate, msg;
-    if (d.over > 0.3) { rate = 0.03; msg = '자국이 그대로 남아요 — 과발효예요'; }
-    else if (d.proof < 0.6) { rate = 1.6; msg = '금방 튀어나와요 — 아직 멀었어요'; }
-    else if (d.proof < 0.95) { rate = 0.5; msg = '천천히 돌아와요 — 조금만 더'; }
-    else { rate = 0.22; msg = '천천히, 반쯤만 돌아와요 — 딱 좋아요!'; }
+    if (S.active < 45) { rate = 2.5; msg = '아직 단단해요. 반죽이 막 잠든 참이에요'; }
+    else if (d.over > 0.3) { rate = 0.03; msg = '눌린 자국이 그대로 남아요. 너무 오래 부풀었어요'; }
+    else if (d.proof < 0.6) { rate = 1.6; msg = '꾹 눌러도 바로 탱 하고 올라와요. 아직 덜 부풀었어요'; }
+    else if (d.proof < 0.95) { rate = 0.5; msg = '자국이 천천히 차올라요. 조금만 더 기다려요'; }
+    else { rate = 0.22; msg = '자국이 아주 천천히, 살짝만 돌아와요. 지금 구우면 딱이에요!'; }
     dents.push({ u, v: Math.min(1, v), depth: 1, rate });
     if (dents.length > 12) dents.shift();
     jig = 0.45;
