@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>시간 발효실</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Nanum+Myeongjo:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#4a3320;--soft:#8a6a4a;--paper:#fbf4e7;--line:rgba(120,80,40,.18)}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:'Gowun Dodum',sans-serif;color:var(--ink);background:radial-gradient(120% 80% at 50% 0%,#fbf3e4 0%,#f1e2c9 60%,#e6d0ad 100%);display:flex;flex-direction:column;min-height:100%;overflow-x:hidden}
+  header{text-align:center;padding:22px 16px 0}
+  h1{font-family:'Nanum Myeongjo',serif;font-weight:800;font-size:26px;margin:0;letter-spacing:.06em}
+  .sub{font-size:13px;color:var(--soft);margin-top:6px}
+  #stage{flex:1;min-height:320px;position:relative}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:manipulation;cursor:pointer}
+  #status{text-align:center;font-size:16px;min-height:1.6em;padding:0 16px;line-height:1.5}
+  .stats{display:flex;justify-content:center;gap:28px;margin:14px 0 6px}
+  .stats div{text-align:center}
+  .stats b{display:block;font-family:'Nanum Myeongjo',serif;font-size:20px;font-variant-numeric:tabular-nums}
+  .stats span{font-size:12px;color:var(--soft)}
+  .actions{text-align:center;margin:10px 0 6px;min-height:46px}
+  #act{font:inherit;font-size:16px;color:#fff;background:#b8662e;border:0;border-radius:999px;padding:11px 24px;cursor:pointer;box-shadow:0 4px 14px rgba(160,80,20,.3)}
+  #act:disabled{background:#c9a07a;cursor:default;box-shadow:none}
+  details{max-width:420px;margin:6px auto calc(20px + env(safe-area-inset-bottom));padding:0 16px;width:100%}
+  summary{cursor:pointer;font-size:13px;color:var(--soft);text-align:center;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  ol{list-style:none;padding:12px 16px;margin:10px 0 0;background:var(--paper);border:1px solid var(--line);border-radius:12px;max-height:220px;overflow:auto;font-size:14px}
+  li{padding:6px 0;border-bottom:1px dashed var(--line);display:flex;gap:10px}
+  li:last-child{border:0}
+  time{color:var(--soft);font-size:12px;white-space:nowrap;padding-top:2px;font-variant-numeric:tabular-nums}
+  .reset{display:block;margin:10px auto 0;background:none;border:0;color:var(--soft);font:inherit;font-size:12px;text-decoration:underline;cursor:pointer}
+  #toast{position:fixed;left:50%;top:96px;transform:translate(-50%,-10px);background:rgba(74,51,32,.92);color:#fff7ea;padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;transition:all .35s;pointer-events:none;max-width:90vw;text-align:center}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<header>
+  <h1>시간 발효실</h1>
+  <div class="sub">이 창을 열어둔 만큼 반죽이 자라요 · 화면이 보일 때만 발효돼요</div>
+</header>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="status"></div>
+<div class="stats">
+  <div><b id="tActive">00:00:00</b><span>함께한 시간</span></div>
+  <div><b id="tProof">0%</b><span>발효</span></div>
+  <div><b id="tBreads">0</b><span>구운 빵</span></div>
+</div>
+<div class="actions"><button id="act" style="visibility:hidden"></button></div>
+<details>
+  <summary>📖 발효 일지</summary>
+  <ol id="log"></ol>
+  <button class="reset" id="reset">반죽 처음부터 다시</button>
+</details>
+<div id="toast"></div>
+<script>
+(() => {
+  const qs = new URLSearchParams(location.search);
+  const SPEED = Math.max(1, Number(qs.get('speed')) || 1);   // ?speed=60 으로 빨리감기 테스트
+  const KEY = 'time-ferment-v1';
+  const PROOF = 1800, OVER_START = 2700, OVER_END = 5400, BAKE = 180;
+  const $ = id => document.getElementById(id);
+  const cv = $('c'), ctx = cv.getContext('2d');
+  const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+  const easeOut = x => 1 - Math.pow(1 - x, 2.2);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  let W = 0, H = 0, DPR = 1;
+
+  // ---------- state ----------
+  function fresh(prev) {
+    return { born: Date.now(), active: 0, lastSeen: Date.now(), mold: 0, bakeStart: null, bakeProof: 0, bakeOver: 0,
+      baked: false, quality: null, breads: prev ? prev.breads : 0, seed: (Math.random() * 1e9) | 0,
+      log: prev ? prev.log : [], flags: {} };
+  }
+  let S = null;
+  try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
+  function store() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+  function note(text) { S.log.unshift({ t: Date.now(), text }); S.log.length = Math.min(S.log.length, 40); renderLog(); }
+  function fmt(sec) { sec = Math.floor(sec); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60; return [h, m, s].map(n => String(n).padStart(2, '0')).join(':'); }
+  function fmtAway(sec) { if (sec < 3600) return Math.round(sec / 60) + '분'; if (sec < 86400) return Math.round(sec / 3600) + '시간'; return Math.round(sec / 86400) + '일'; }
+  function renderLog() {
+    if (!S) return;
+    $('log').innerHTML = S.log.map(l => {
+      const d = new Date(l.t);
+      const ts = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      return `<li><time>${ts}</time><span>${l.text}</span></li>`;
+    }).join('');
+  }
+  let toastT;
+  function toast(msg) { const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('show'), 2600); }
+
+  if (!S || typeof S.active !== 'number') { S = fresh(); note('반죽이 태어났다'); }
+  else {
+    const away = (Date.now() - S.lastSeen) / 1000;
+    if (away > 600) note(fmtAway(away) + ' 만에 다시 찾아왔다');
+    if (away > 12 * 3600) {
+      const add = (away - 12 * 3600) / (6 * 86400);
+      S.mold = Math.min(1, S.mold + add);
+      if (add > 0.02) { note('자리를 비운 사이 곰팡이가 피었다'); setTimeout(() => toast('😷 오래 비운 사이 곰팡이가 피었어요'), 800); }
+    }
+  }
+  S.lastSeen = Date.now(); store();
+
+  function derived() {
+    let proof, over, bake = 0;
+    if (S.bakeStart !== null) { proof = S.bakeProof; over = S.bakeOver; bake = clamp((S.active - S.bakeStart) / BAKE); }
+    else { proof = clamp(S.active / PROOF); over = clamp((S.active - OVER_START) / (OVER_END - OVER_START)); }
+    if (S.baked) bake = 1;
+    const height = 0.28 + 0.72 * easeOut(proof) - 0.32 * over + 0.1 * bake * (1 - over);
+    return { proof, over, bake, height };
+  }
+
+  function quality() {
+    const p = S.bakeProof, o = S.bakeOver;
+    if (o > 0.6) return '푹 꺼진 납작빵';
+    if (o > 0.2) return '살짝 꺼진 빵';
+    if (p < 0.7) return '떡진 빵';
+    if (p < 0.95) return '조금 이른 빵';
+    return '완벽한 빵';
+  }
+
+  function milestones() {
+    const d = derived(), f = S.flags;
+    if (!f.breath && S.active >= 60) { f.breath = 1; note('처음으로 숨을 쉬었다'); }
+    if (!f.half && d.proof >= 0.5) { f.half = 1; note('두 배 가까이 부풀었다'); toast('몽글몽글 부풀었어요. 이제 구울 수 있어요'); }
+    if (!f.ready && d.proof >= 1) { f.ready = 1; note('발효 완성! 굽기 딱 좋은 때'); toast('🔥 발효 완성! 지금 구우면 완벽해요'); }
+    if (!f.over && d.over > 0.25 && S.bakeStart === null) { f.over = 1; note('너무 오래 두었다. 조금씩 꺼지고 있다'); }
+    if (S.bakeStart !== null && !S.baked && d.bake >= 1) {
+      S.baked = true; S.breads++; S.quality = quality();
+      note(`빵이 구워졌다 — ${S.quality}`); toast('🍞 ' + S.quality + '이 나왔어요!'); store();
+    }
+  }
+
+  function statusText(d) {
+    if (S.mold >= 0.8) return '곰팡이가 가득 피었어요. 너무 오래 혼자 뒀나 봐요.';
+    let s;
+    if (S.baked) s = `${S.quality}이 나왔어요. 따끈따끈해요.`;
+    else if (S.bakeStart !== null) s = '오븐 안에서 노릇노릇 익는 중이에요.';
+    else if (S.active < 45) s = '갓 태어난 반죽. 아직 새근새근 자고 있어요.';
+    else if (d.proof < 0.3) s = '조금씩 숨을 쉬기 시작했어요.';
+    else if (d.proof < 0.7) s = '몽글몽글 부풀고 있어요. 창을 열어두면 더 자라요.';
+    else if (d.proof < 1) s = '거의 다 됐어요. 손가락으로 꾹 눌러 보세요.';
+    else if (d.over < 0.15) s = '딱 좋아요! 지금 구우면 완벽해요.';
+    else if (d.over < 0.7) s = '너무 오래 뒀나 봐요… 조금씩 꺼지는 중.';
+    else s = '푹 꺼졌어요. 그래도 구울 수는 있어요.';
+    if (S.mold > 0.15) s = '곰팡이가 피기 시작했어요 😷 ' + s;
+    return s;
+  }
+
+  let act = null;
+  function ui() {
+    const d = derived();
+    $('tActive').textContent = fmt(S.active);
+    $('tProof').textContent = Math.round(d.proof * 100) + '%';
+    $('tBreads').textContent = S.breads;
+    $('status').textContent = statusText(d);
+    const b = $('act');
+    let label = null, dis = false; act = null;
+    if (S.mold >= 0.8) { label = '버리고 새로 시작 🗑'; act = 'toss'; }
+    else if (S.baked) { label = '맛있게 먹고 새 반죽 🍞'; act = 'eat'; }
+    else if (S.bakeStart !== null) { label = '굽는 중 ' + Math.round(d.bake * 100) + '%'; dis = true; }
+    else if (d.proof >= 0.5) { label = '오븐에 굽기 🔥'; act = 'bake'; }
+    b.style.visibility = label ? 'visible' : 'hidden';
+    if (label) b.textContent = label;
+    b.disabled = dis;
+  }
+
+  $('act').addEventListener('click', () => {
+    if (act === 'bake') {
+      const d = derived();
+      S.bakeProof = d.proof; S.bakeOver = d.over; S.bakeStart = S.active;
+      bubbles.length = 0; dents.length = 0;
+      note('오븐에 넣었다'); store();
+    } else if (act === 'eat' || act === 'toss') {
+      note(act === 'eat' ? '빵을 맛있게 먹었다' : '반죽을 버렸다');
+      S = fresh(S); note('새 반죽이 태어났다'); store();
+      bubbles.length = 0; dents.length = 0; moldCache = null;
+    }
+    ui();
+  });
+  $('reset').addEventListener('click', () => {
+    if (!confirm('지금 반죽을 버리고 처음부터 시작할까요?')) return;
+    note('반죽을 처음부터 다시 만들었다');
+    S = fresh(S); note('새 반죽이 태어났다'); store();
+    bubbles.length = 0; dents.length = 0; moldCache = null; ui();
+  });
+
+  // ---------- tick ----------
+  let lastTick = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const dt = Math.min(5, (now - lastTick) / 1000); lastTick = now;
+    if (!document.hidden) S.active += dt * SPEED;
+    S.lastSeen = Date.now();
+    milestones(); ui();
+  }, 250);
+  setInterval(store, 2000);
+  addEventListener('pagehide', store);
+  document.addEventListener('visibilitychange', store);
+
+  // ---------- drawing ----------
+  const bubbles = [], dents = [];
+  let jig = 0, moldCache = null, blink = 0, nextBlink = 3;
+
+  function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function moldSpots() {
+    if (moldCache && moldCache.seed === S.seed) return moldCache.spots;
+    const r = mulberry(S.seed), spots = [];
+    for (let i = 0; i < 40; i++) spots.push({ u: r() * 1.7 - 0.85, v: 0.12 + r() * 0.8, s: 0.5 + r() * 0.8, k: r() * 6 });
+    moldCache = { seed: S.seed, spots };
+    return spots;
+  }
+  const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  function mix(a, b, t) { const A = hex(a), B = hex(b); return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(',')})`; }
+
+  function geom(d) {
+    const bw = Math.min(W * 0.78, 440, H * 0.85);
+    const rx = bw / 2, ry = bw * 0.085, bh = bw * 0.42;
+    const cx = W / 2, rimY = H * 0.62;
+    const drx = rx * Math.min(0.97, 0.8 + 0.2 * d.height), dry = bw * 0.62 * d.height;
+    const baseY = rimY + (1 - d.height) * bh * 0.35;
+    return { cx, rimY, rx, ry, bh, drx, dry, bw, baseY };
+  }
+  function surfPt(g, u, v) { return { x: g.cx + u * g.drx, y: g.baseY - g.dry * v * Math.sqrt(Math.max(0, 1 - u * u)) }; }
+
+  function doughPath(t, d, g) {
+    const breath = S.baked ? 0 : 0.014 * Math.sin(t * 1.1) * Math.min(1, S.active / 60);
+    const jj = jig * Math.sin(t * 28);
+    ctx.beginPath();
+    const N = 56;
+    for (let i = 0; i <= N; i++) {
+      const a = Math.PI + Math.PI * i / N;
+      const wob = 1 + 0.022 * Math.sin(a * 5 + t * 0.6 + (S.seed % 7)) + 0.012 * Math.sin(a * 9 - t * 0.45);
+      const x = g.cx + Math.cos(a) * g.drx * wob * (1 + jj * 0.025);
+      const y = g.baseY + Math.sin(a) * g.dry * wob * (1 + breath - jj * 0.04);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.lineTo(g.cx + g.rx * 0.5, g.rimY + g.bh * 0.55);
+    ctx.lineTo(g.cx - g.rx * 0.5, g.rimY + g.bh * 0.55);
+    ctx.closePath();
+  }
+
+  function drawFace(t, d, g) {
+    const s = g.drx * 0.04;
+    const L = surfPt(g, -0.17, 0.5), R = surfPt(g, 0.17, 0.5), M = surfPt(g, 0, 0.36);
+    ctx.strokeStyle = 'rgba(80,50,25,0.75)'; ctx.fillStyle = 'rgba(80,50,25,0.8)';
+    ctx.lineWidth = Math.max(1.5, s * 0.55); ctx.lineCap = 'round';
+    const sleeping = S.active < 45 && !S.bakeStart;
+    const sick = S.mold > 0.4, sad = d.over > 0.3 && !S.baked, happy = S.baked || (d.proof >= 1 && d.over < 0.15);
+    for (const e of [L, R]) {
+      ctx.beginPath();
+      if (sick) { ctx.moveTo(e.x - s, e.y - s); ctx.lineTo(e.x + s, e.y + s); ctx.moveTo(e.x + s, e.y - s); ctx.lineTo(e.x - s, e.y + s); ctx.stroke(); }
+      else if (sleeping || blink > 0) { ctx.moveTo(e.x - s, e.y); ctx.lineTo(e.x + s, e.y); ctx.stroke(); }
+      else if (happy) { ctx.arc(e.x, e.y + s * 0.4, s, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      else { ctx.arc(e.x, e.y, s * 0.7, 0, 7); ctx.fill(); }
+    }
+    // cheeks
+    ctx.fillStyle = `rgba(240,140,120,${S.baked ? 0.15 : 0.28})`;
+    for (const e of [L, R]) { ctx.beginPath(); ctx.ellipse(e.x + (e === L ? -s * 1.6 : s * 1.6), e.y + s * 1.8, s * 1.4, s * 0.8, 0, 0, 7); ctx.fill(); }
+    ctx.beginPath();
+    if (jig > 0.12 && !S.baked) { ctx.fillStyle = 'rgba(80,50,25,0.75)'; ctx.ellipse(M.x, M.y, s * 0.7, s * 0.9, 0, 0, 7); ctx.fill(); }
+    else if (sad || sick) { ctx.arc(M.x, M.y + s * 1.2, s * 1.1, Math.PI * 1.2, Math.PI * 1.8); ctx.stroke(); }
+    else { ctx.arc(M.x, M.y - s * 0.6, s * 1.1, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke(); }
+    return sleeping;
+  }
+
+  let last = performance.now();
+  function draw(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    const t = now / 1000, d = derived(), g = geom(d);
+    ctx.clearRect(0, 0, W, H);
+
+    if (S.bakeStart !== null && !S.baked) {
+      const a = 0.4 * Math.min(1, d.bake * 4) * (0.85 + 0.15 * Math.sin(t * 3));
+      const og = ctx.createRadialGradient(g.cx, g.rimY, 10, g.cx, g.rimY, Math.max(W, H) * 0.7);
+      og.addColorStop(0, `rgba(255,140,50,${a})`); og.addColorStop(1, 'rgba(255,140,50,0)');
+      ctx.fillStyle = og; ctx.fillRect(0, 0, W, H);
+    }
+    // shadow on table
+    ctx.fillStyle = 'rgba(90,55,20,0.14)';
+    ctx.beginPath(); ctx.ellipse(g.cx, g.rimY + g.bh + 4, g.rx * 0.85, g.ry * 1.3, 0, 0, 7); ctx.fill();
+    // bowl inside
+    ctx.fillStyle = '#7f949c';
+    ctx.beginPath(); ctx.ellipse(g.cx, g.rimY, g.rx, g.ry, 0, 0, 7); ctx.fill();
+
+    // dough body
+    const c1 = mix('#fcf3e2', '#eaa757', d.bake), c2 = mix('#e4cb9f', '#8b4a1c', d.bake);
+    const top = g.baseY - g.dry;
+    const gr = ctx.createRadialGradient(g.cx - g.drx * 0.3, top + g.dry * 0.25, 5, g.cx, g.baseY, g.drx * 1.3);
+    gr.addColorStop(0, c1); gr.addColorStop(1, c2);
+    ctx.fillStyle = gr; doughPath(t, d, g); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,80,40,0.18)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.save(); doughPath(t, d, g); ctx.clip();
+
+    // bubbles
+    if (S.bakeStart === null && S.active > 30 && d.proof < 1.0001 && S.mold < 0.8) {
+      const rate = (0.5 + d.proof * 1.6) * (1 - d.over * 0.8);
+      if (Math.random() < rate * dt && bubbles.length < 30) bubbles.push({ u: rand(-0.8, 0.8), v: rand(0.2, 0.92), r: rand(1.5, 5) * (0.5 + d.height), life: 0, max: rand(2, 6) });
+    }
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i]; b.life += dt;
+      if (b.life > b.max) { bubbles.splice(i, 1); continue; }
+      const p = surfPt(g, b.u, b.v), r = b.r * Math.min(1, b.life / 0.6);
+      ctx.fillStyle = 'rgba(255,250,240,0.55)'; ctx.strokeStyle = 'rgba(150,110,60,0.35)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    // dents
+    for (let i = dents.length - 1; i >= 0; i--) {
+      const dn = dents[i]; dn.depth -= dn.rate * dt * 0.5;
+      if (dn.depth <= 0) { dents.splice(i, 1); continue; }
+      const p = surfPt(g, dn.u, dn.v), r = g.drx * 0.07;
+      const dg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      dg.addColorStop(0, `rgba(120,78,35,${0.35 * dn.depth})`); dg.addColorStop(0.7, `rgba(120,78,35,${0.12 * dn.depth})`); dg.addColorStop(1, 'rgba(255,250,240,0)');
+      ctx.fillStyle = dg; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill();
+    }
+    // scoring + flour when baking
+    if (d.bake > 0) {
+      const a = surfPt(g, -0.5, 0.72), m = surfPt(g, 0, 0.98), b = surfPt(g, 0.52, 0.8);
+      ctx.strokeStyle = `rgba(255,228,175,${0.85 * d.bake})`; ctx.lineWidth = Math.max(3, g.drx * 0.05); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(m.x, m.y - g.dry * 0.12, b.x, b.y); ctx.stroke();
+      if (d.bake > 0.5) {
+        const r = mulberry(S.seed + 3);
+        ctx.fillStyle = `rgba(255,252,245,${(d.bake - 0.5) * 0.9})`;
+        for (let i = 0; i < 60; i++) { const p = surfPt(g, r() * 1.6 - 0.8, 0.55 + r() * 0.45); ctx.beginPath(); ctx.arc(p.x, p.y, 0.6 + r() * 1.4, 0, 7); ctx.fill(); }
+      }
+    }
+    // mold
+    if (S.mold > 0.01) {
+      const spots = moldSpots(), n = Math.ceil(S.mold * spots.length);
+      for (let i = 0; i < n; i++) {
+        const sp = spots[i], p = surfPt(g, sp.u, sp.v), sz = sp.s * (3 + 11 * S.mold) * (g.bw / 440);
+        ctx.fillStyle = 'rgba(240,244,232,0.55)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, sz * 1.5, 0, 7); ctx.fill();
+        for (let k = 0; k < 6; k++) {
+          const ang = sp.k + k * 1.05, rr = sz * 0.7;
+          ctx.fillStyle = k % 2 ? 'rgba(126,152,104,0.8)' : 'rgba(92,118,84,0.85)';
+          ctx.beginPath(); ctx.arc(p.x + Math.cos(ang) * rr, p.y + Math.sin(ang) * rr * 0.7, sz * 0.55, 0, 7); ctx.fill();
+        }
+      }
+    }
+    blink -= dt; nextBlink -= dt;
+    if (nextBlink < 0) { blink = 0.14; nextBlink = rand(2.5, 6); }
+    const sleeping = drawFace(t, d, g);
+    ctx.restore();
+
+    if (sleeping) {
+      ctx.fillStyle = 'rgba(90,60,30,0.5)'; ctx.font = `700 ${Math.round(g.bw * 0.045)}px 'Nanum Myeongjo', serif`;
+      for (let i = 0; i < 3; i++) {
+        const ph = (t * 0.4 + i / 3) % 1;
+        ctx.globalAlpha = Math.sin(ph * Math.PI);
+        ctx.fillText('z', g.cx + g.drx * 0.35 + ph * 30, g.baseY - g.dry - 8 - ph * 50);
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (S.baked) { // steam
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      for (let i = -1; i <= 1; i++) {
+        ctx.beginPath();
+        for (let k = 0; k <= 20; k++) {
+          const y = g.baseY - g.dry - 10 - k * 4, x = g.cx + i * g.drx * 0.35 + Math.sin(k * 0.5 - t * 2 + i) * 6;
+          k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.globalAlpha = 0.35 + 0.25 * Math.sin(t + i); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // bowl front
+    ctx.beginPath();
+    ctx.moveTo(g.cx - g.rx, g.rimY);
+    ctx.bezierCurveTo(g.cx - g.rx, g.rimY + g.bh * 0.85, g.cx - g.rx * 0.45, g.rimY + g.bh, g.cx, g.rimY + g.bh);
+    ctx.bezierCurveTo(g.cx + g.rx * 0.45, g.rimY + g.bh, g.cx + g.rx, g.rimY + g.bh * 0.85, g.cx + g.rx, g.rimY);
+    ctx.ellipse(g.cx, g.rimY, g.rx, g.ry, 0, 0, Math.PI, false);
+    ctx.closePath();
+    const bg = ctx.createLinearGradient(g.cx - g.rx, 0, g.cx + g.rx, 0);
+    bg.addColorStop(0, '#9fb3b8'); bg.addColorStop(0.35, '#cfdcdd'); bg.addColorStop(1, '#7d9197');
+    ctx.fillStyle = bg; ctx.fill();
+    // stripe
+    ctx.save(); ctx.clip();
+    ctx.strokeStyle = 'rgba(70,95,120,0.45)'; ctx.lineWidth = g.bw * 0.018;
+    ctx.beginPath(); ctx.ellipse(g.cx, g.rimY + g.bh * 0.32, g.rx * 1.02, g.ry * 1.4, 0, 0, Math.PI); ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(g.cx, g.rimY, g.rx, g.ry, 0, 0, Math.PI); ctx.stroke();
+
+    jig *= Math.exp(-dt * 4);
+    requestAnimationFrame(draw);
+  }
+
+  // ---------- poke test ----------
+  cv.addEventListener('pointerdown', e => {
+    const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const d = derived(), g = geom(d);
+    const u = (x - g.cx) / g.drx;
+    if (Math.abs(u) >= 0.97) return;
+    const hMax = g.dry * Math.sqrt(1 - u * u);
+    const v = (g.baseY - y) / hMax;
+    if (v < 0.05 || v > 1.05) return;
+    if (S.baked) { toast('🤛 똑똑, 단단하게 잘 구워졌어요'); jig = 0.25; return; }
+    if (S.bakeStart !== null) { toast('🔥 앗 뜨거! 굽는 중이에요'); return; }
+    let rate, msg;
+    if (d.over > 0.3) { rate = 0.03; msg = '자국이 그대로 남아요 — 과발효예요'; }
+    else if (d.proof < 0.6) { rate = 1.6; msg = '금방 튀어나와요 — 아직 멀었어요'; }
+    else if (d.proof < 0.95) { rate = 0.5; msg = '천천히 돌아와요 — 조금만 더'; }
+    else { rate = 0.22; msg = '천천히, 반쯤만 돌아와요 — 딱 좋아요!'; }
+    dents.push({ u, v: Math.min(1, v), depth: 1, rate });
+    if (dents.length > 12) dents.shift();
+    jig = 0.45;
+    toast('👆 ' + msg);
+  });
+
+  function resize() {
+    DPR = Math.min(2, devicePixelRatio || 1);
+    const box = $('stage').getBoundingClientRect();
+    W = box.width; H = box.height;
+    cv.width = W * DPR; cv.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  addEventListener('resize', resize);
+  resize(); renderLog(); ui();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
